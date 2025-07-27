@@ -1,15 +1,24 @@
-use std::{iter::FusedIterator, num::NonZero};
+use std::{iter::FusedIterator, marker::PhantomData, num::NonZero};
 
-pub trait Metric<T> {
+pub trait Metric<T: ?Sized> {
     fn distance(&mut self, a: &T, b: &T) -> usize;
 }
 
 #[derive(Debug, Default)]
-pub struct Levenshtein {
+pub struct Levenshtein<I, const INSERTION: usize, const DELETION: usize, const SUBSTITUTION: usize>
+{
     cache: Vec<usize>,
+    _i: PhantomData<I>,
 }
 
-impl<T: AsRef<[u8]>> Metric<T> for Levenshtein {
+impl<
+    I: PartialEq,
+    T: AsRef<[I]> + ?Sized,
+    const INSERTION: usize,
+    const DELETION: usize,
+    const SUBSTITUTION: usize,
+> Metric<T> for Levenshtein<I, INSERTION, DELETION, SUBSTITUTION>
+{
     fn distance(&mut self, a: &T, b: &T) -> usize {
         let a = a.as_ref();
         let b = b.as_ref();
@@ -23,9 +32,9 @@ impl<T: AsRef<[u8]>> Metric<T> for Levenshtein {
             result = last + 1;
 
             for (b, cache) in b.iter().zip(self.cache.iter_mut()) {
-                let substitution = last + usize::from(a != b);
+                let tmp = last + if a == b { 0 } else { SUBSTITUTION };
                 last = *cache;
-                result = substitution.min(last + 1).min(result + 1);
+                result = tmp.min(last + DELETION).min(result + INSERTION);
                 *cache = result;
             }
         }
@@ -57,8 +66,12 @@ struct BKNode<K, V> {
     children: Vec<BKNode<K, V>>,
 }
 
-impl<K, V: Default, M: Metric<K> + Default> BKMap<K, V, M> {
-    pub fn get_or_default(&mut self, key: K) -> &mut V {
+impl<K, V, M> BKMap<K, V, M> {
+    pub fn get_or_default(&mut self, key: K) -> &mut V
+    where
+        V: Default,
+        M: Metric<K>,
+    {
         if self.root.is_none() {
             self.root = Some(BKNode {
                 dist: NonZero::new(1).unwrap(),
@@ -96,7 +109,10 @@ impl<K, V: Default, M: Metric<K> + Default> BKMap<K, V, M> {
         &'a self,
         key: &'b K,
         tolerance: usize,
-    ) -> impl Iterator<Item = (usize, &'a K, &'a V)> {
+    ) -> impl Iterator<Item = (usize, &'a K, &'a V)>
+    where
+        M: Metric<K> + Default,
+    {
         BKFuzzy {
             metric: M::default(),
             stack: self.root.as_ref().into_iter().collect(),
