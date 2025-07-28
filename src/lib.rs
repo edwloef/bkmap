@@ -1,25 +1,28 @@
 use std::{iter::FusedIterator, marker::PhantomData, num::NonZero};
 
-pub trait Metric<T: ?Sized> {
-    fn distance(&mut self, a: &T, b: &T) -> usize;
+pub trait Metric<A, B> {
+    fn distance(&mut self, a: A, b: B) -> usize;
 }
 
-#[derive(Debug, Default)]
-pub struct Levenshtein<I, const INSERTION: usize, const DELETION: usize, const SUBSTITUTION: usize>
-{
+#[derive(Debug)]
+pub struct Levenshtein<E, const I: usize = 1, const D: usize = 1, const S: usize = 1> {
     cache: Vec<usize>,
-    _i: PhantomData<I>,
+    _e: PhantomData<E>,
 }
 
-impl<
-    I: PartialEq,
-    T: AsRef<[I]> + ?Sized,
-    const INSERTION: usize,
-    const DELETION: usize,
-    const SUBSTITUTION: usize,
-> Metric<T> for Levenshtein<I, INSERTION, DELETION, SUBSTITUTION>
+impl<E, const I: usize, const D: usize, const S: usize> Default for Levenshtein<E, I, D, S> {
+    fn default() -> Self {
+        Self {
+            cache: Vec::new(),
+            _e: PhantomData,
+        }
+    }
+}
+
+impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq, const I: usize, const D: usize, const S: usize>
+    Metric<A, B> for Levenshtein<E, I, D, S>
 {
-    fn distance(&mut self, a: &T, b: &T) -> usize {
+    fn distance(&mut self, a: A, b: B) -> usize {
         let a = a.as_ref();
         let b = b.as_ref();
 
@@ -32,9 +35,9 @@ impl<
             result = last + 1;
 
             for (b, cache) in b.iter().zip(self.cache.iter_mut()) {
-                let tmp = last + if a == b { 0 } else { SUBSTITUTION };
+                let tmp = last + if a == b { 0 } else { S };
                 last = *cache;
-                result = tmp.min(last + DELETION).min(result + INSERTION);
+                result = tmp.min(last + D).min(result + I);
                 *cache = result;
             }
         }
@@ -67,51 +70,49 @@ struct BKNode<K, V> {
 }
 
 impl<K, V, M> BKMap<K, V, M> {
-    pub fn get_or_default(&mut self, key: K) -> &mut V
+    pub fn insert<'a>(&'a mut self, key: K, value: V)
     where
-        V: Default,
-        M: Metric<K>,
+        M: for<'b> Metric<&'b K, &'a K>,
     {
         if self.root.is_none() {
             self.root = Some(BKNode {
                 dist: NonZero::new(1).unwrap(),
                 key,
-                value: V::default(),
+                value,
                 children: Vec::new(),
             });
-
-            return &mut self.root.as_mut().unwrap().value;
+            return;
         }
 
         let mut node = self.root.as_mut().unwrap();
 
         loop {
             let Some(dist) = NonZero::new(self.metric.distance(&key, &node.key)) else {
-                return &mut node.value;
+                node.value = value;
+                return;
             };
 
             let Some(child) = node.children.iter().position(|child| child.dist == dist) else {
                 node.children.push(BKNode {
                     dist,
                     key,
-                    value: V::default(),
+                    value,
                     children: Vec::new(),
                 });
-
-                return &mut node.children.last_mut().unwrap().value;
+                return;
             };
 
             node = &mut node.children[child];
         }
     }
 
-    pub fn fuzzy<'a: 'b, 'b>(
+    pub fn fuzzy_search<'a, S: Copy>(
         &'a self,
-        key: &'b K,
+        key: S,
         tolerance: usize,
     ) -> impl Iterator<Item = (usize, &'a K, &'a V)>
     where
-        M: Metric<K> + Default,
+        M: Metric<S, &'a K> + Default,
     {
         BKFuzzy {
             metric: M::default(),
@@ -122,14 +123,14 @@ impl<K, V, M> BKMap<K, V, M> {
     }
 }
 
-struct BKFuzzy<'a, 'b, K, V, M> {
+struct BKFuzzy<'a, K, V, M, S> {
     metric: M,
     stack: Vec<&'a BKNode<K, V>>,
-    key: &'b K,
+    key: S,
     tolerance: usize,
 }
 
-impl<'a: 'b, 'b, K, V, M: Metric<K>> Iterator for BKFuzzy<'a, 'b, K, V, M> {
+impl<'a, K, V, M: Metric<S, &'a K>, S: Copy> Iterator for BKFuzzy<'a, K, V, M, S> {
     type Item = (usize, &'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -150,4 +151,4 @@ impl<'a: 'b, 'b, K, V, M: Metric<K>> Iterator for BKFuzzy<'a, 'b, K, V, M> {
     }
 }
 
-impl<'a: 'b, 'b, K, V, M: Metric<K>> FusedIterator for BKFuzzy<'a, 'b, K, V, M> {}
+impl<K, V, M, S> FusedIterator for BKFuzzy<'_, K, V, M, S> where Self: Iterator {}
