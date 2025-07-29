@@ -106,10 +106,10 @@ impl<K, V, M> BKMap<K, V, M> {
         }
     }
 
-    pub fn fuzzy_search<'a, S: Copy>(
+    pub fn fuzzy_search_distance<'a, S: Copy>(
         &'a self,
         key: S,
-        tolerance: usize,
+        distance: usize,
     ) -> impl Iterator<Item = (usize, &'a K, &'a V)>
     where
         M: Metric<S, &'a K> + Default,
@@ -118,8 +118,53 @@ impl<K, V, M> BKMap<K, V, M> {
             metric: M::default(),
             stack: self.root.as_ref().into_iter().collect(),
             key,
-            tolerance,
+            distance,
         }
+    }
+
+    pub fn fuzzy_search_count<'a, S: Copy>(
+        &'a self,
+        key: S,
+        count: usize,
+    ) -> Vec<(usize, &'a K, &'a V)>
+    where
+        M: Metric<S, &'a K> + Default,
+    {
+        let Some(root) = self.root.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut metric = M::default();
+
+        let mut ret = Vec::with_capacity(count);
+        let mut stack = vec![(0, root)];
+
+        while let Some((dist, node)) = stack.pop() {
+            let distance = ret.get(count - 1).map_or(usize::MAX, |(x, _, _)| *x);
+
+            if node.dist.get().abs_diff(dist) > distance {
+                continue;
+            }
+
+            let dist = metric.distance(key, &node.key);
+
+            stack.extend(
+                node.children
+                    .iter()
+                    .filter(|child| child.dist.get().abs_diff(dist) <= distance)
+                    .map(|x| (dist, x)),
+            );
+
+            if dist <= distance {
+                let i = ret.partition_point(|(x, _, _)| *x <= dist);
+                ret.insert(i, (dist, &node.key, &node.value));
+                if ret.len() > count && i < count && ret[count - 1].0 != ret[count].0 {
+                    ret.truncate(count);
+                }
+            }
+        }
+
+        ret
     }
 }
 
@@ -127,7 +172,7 @@ struct BKFuzzy<'a, K, V, M, S> {
     metric: M,
     stack: Vec<&'a BKNode<K, V>>,
     key: S,
-    tolerance: usize,
+    distance: usize,
 }
 
 impl<'a, K, V, M: Metric<S, &'a K>, S: Copy> Iterator for BKFuzzy<'a, K, V, M, S> {
@@ -141,10 +186,10 @@ impl<'a, K, V, M: Metric<S, &'a K>, S: Copy> Iterator for BKFuzzy<'a, K, V, M, S
             self.stack.extend(
                 node.children
                     .iter()
-                    .filter(|child| child.dist.get().abs_diff(dist) <= self.tolerance),
+                    .filter(|child| child.dist.get().abs_diff(dist) <= self.distance),
             );
 
-            if dist <= self.tolerance {
+            if dist <= self.distance {
                 return Some((dist, &node.key, &node.value));
             }
         }
