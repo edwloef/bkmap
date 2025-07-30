@@ -27,12 +27,12 @@ impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq, const I: usize, const D: usize,
         let b = b.as_ref();
 
         self.cache.clear();
-        self.cache.extend(1..=b.len());
+        self.cache.extend((1..).map(|x| x * I).take(b.len()));
 
-        let mut result = b.len();
+        let mut result = b.len() * I;
 
-        for (mut last, a) in a.iter().enumerate() {
-            result = last + 1;
+        for (a, mut last) in a.iter().zip((0..).map(|x| x * D)) {
+            result = last + D;
 
             for (b, cache) in b.iter().zip(self.cache.iter_mut()) {
                 let tmp = last + if a == b { 0 } else { S };
