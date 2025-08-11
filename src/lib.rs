@@ -66,7 +66,16 @@ struct BKNode<K, V> {
     dist: NonZero<usize>,
     key: K,
     value: V,
-    children: Vec<BKNode<K, V>>,
+    children: Vec<Self>,
+}
+
+impl<K, V> BKNode<K, V> {
+    fn children_around(&self, dist: usize, distance: usize) -> impl Iterator<Item = &Self> {
+        self.children
+            .iter()
+            .skip_while(move |child| child.dist.get() < dist.saturating_sub(distance))
+            .take_while(move |child| child.dist.get() <= dist.saturating_add(distance))
+    }
 }
 
 impl<K, V, M> BKMap<K, V, M> {
@@ -75,31 +84,33 @@ impl<K, V, M> BKMap<K, V, M> {
         M: for<'b> Metric<&'b K, &'a K>,
     {
         if self.root.is_none() {
-            self.root = Some(BKNode {
+            return self.root = Some(BKNode {
                 dist: NonZero::new(1).unwrap(),
                 key,
                 value,
                 children: Vec::new(),
             });
-            return;
         }
 
         let mut node = self.root.as_mut().unwrap();
 
         loop {
             let Some(dist) = NonZero::new(self.metric.distance(&key, &node.key)) else {
-                node.value = value;
-                return;
+                return node.value = value;
             };
 
-            let Some(child) = node.children.iter().position(|child| child.dist == dist) else {
-                node.children.push(BKNode {
-                    dist,
-                    key,
-                    value,
-                    children: Vec::new(),
-                });
-                return;
+            let child = node.children.iter().position(|child| child.dist >= dist);
+
+            let Some(child) = child.filter(|child| node.children[*child].dist == dist) else {
+                return node.children.insert(
+                    child.unwrap_or(node.children.len()),
+                    BKNode {
+                        dist,
+                        key,
+                        value,
+                        children: Vec::new(),
+                    },
+                );
             };
 
             node = &mut node.children[child];
@@ -149,14 +160,15 @@ impl<K, V, M> BKMap<K, V, M> {
             let dist = metric.distance(key, &node.key);
 
             stack.extend(
-                node.children
-                    .iter()
-                    .filter(|child| child.dist.get().abs_diff(dist) <= distance)
-                    .map(|x| (dist, x)),
+                node.children_around(dist, distance)
+                    .map(|child| (dist, child)),
             );
 
             if dist <= distance {
-                let i = ret.partition_point(|(x, _, _)| *x <= dist);
+                let i = ret
+                    .iter()
+                    .position(|(x, _, _)| *x > dist)
+                    .unwrap_or(ret.len());
                 ret.insert(i, (dist, &node.key, &node.value));
                 if ret.len() > count && i < count && ret[count - 1].0 != ret[count].0 {
                     ret.truncate(count);
@@ -183,11 +195,7 @@ impl<'a, K, V, M: Metric<S, &'a K>, S: Copy> Iterator for BKFuzzy<'a, K, V, M, S
             let node = self.stack.pop()?;
             let dist = self.metric.distance(self.key, &node.key);
 
-            self.stack.extend(
-                node.children
-                    .iter()
-                    .filter(|child| child.dist.get().abs_diff(dist) <= self.distance),
-            );
+            self.stack.extend(node.children_around(dist, self.distance));
 
             if dist <= self.distance {
                 return Some((dist, &node.key, &node.value));
