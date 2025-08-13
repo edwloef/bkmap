@@ -70,6 +70,14 @@ struct BKNode<K, V> {
 }
 
 impl<K, V> BKNode<K, V> {
+    fn shrink_to_fit(&mut self) {
+        self.children.shrink_to_fit();
+
+        for child in &mut self.children {
+            child.shrink_to_fit();
+        }
+    }
+
     fn children_around(&self, dist: usize, distance: usize) -> impl Iterator<Item = &Self> {
         self.children
             .iter()
@@ -114,6 +122,12 @@ impl<K, V, M> BKMap<K, V, M> {
             };
 
             node = &mut node.children[child];
+        }
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        if let Some(root) = &mut self.root {
+            root.shrink_to_fit();
         }
     }
 
