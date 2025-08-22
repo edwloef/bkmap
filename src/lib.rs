@@ -5,12 +5,12 @@ pub trait Metric<A, B> {
 }
 
 #[derive(Debug)]
-pub struct Levenshtein<E, const I: usize = 1, const D: usize = 1, const S: usize = 1> {
+pub struct Levenshtein<E> {
     cache: Vec<usize>,
     _e: PhantomData<E>,
 }
 
-impl<E, const I: usize, const D: usize, const S: usize> Default for Levenshtein<E, I, D, S> {
+impl<E> Default for Levenshtein<E> {
     fn default() -> Self {
         Self {
             cache: Vec::new(),
@@ -19,26 +19,21 @@ impl<E, const I: usize, const D: usize, const S: usize> Default for Levenshtein<
     }
 }
 
-impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq, const I: usize, const D: usize, const S: usize>
-    Metric<A, B> for Levenshtein<E, I, D, S>
-{
+impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for Levenshtein<E> {
     fn distance(&mut self, a: A, b: B) -> usize {
         let a = a.as_ref();
         let b = b.as_ref();
 
         self.cache.clear();
-        self.cache.extend((1..).map(|x| x * I).take(b.len()));
+        self.cache.extend(1..=b.len());
 
-        let mut result = b.len() * I;
+        let mut result = b.len();
 
-        for (a, mut last) in a.iter().zip((0..).map(|x| x * D)) {
-            result = last + D;
-
-            for (b, cache) in b.iter().zip(self.cache.iter_mut()) {
-                let tmp = last + if a == b { 0 } else { S };
-                last = *cache;
-                result = tmp.min(last + D).min(result + I);
-                *cache = result;
+        for (mut last, a) in a.iter().enumerate() {
+            result = last + 1;
+            for (b, cache) in b.iter().zip(&mut self.cache) {
+                result = (last + usize::from(a != b)).min(*cache + 1).min(result + 1);
+                (last, *cache) = (*cache, result);
             }
         }
 
@@ -135,7 +130,7 @@ impl<K, V, M> BKMap<K, V, M> {
         &'a self,
         key: S,
         distance: usize,
-    ) -> impl Iterator<Item = (usize, &'a K, &'a V)>
+    ) -> BKFuzzy<'a, K, V, M, S>
     where
         M: Metric<S, &'a K> + Default,
     {
@@ -194,7 +189,8 @@ impl<K, V, M> BKMap<K, V, M> {
     }
 }
 
-struct BKFuzzy<'a, K, V, M, S> {
+#[derive(Debug)]
+pub struct BKFuzzy<'a, K, V, M, S> {
     metric: M,
     stack: Vec<&'a BKNode<K, V>>,
     key: S,
