@@ -1,4 +1,8 @@
-use std::{iter::FusedIterator, marker::PhantomData, num::NonZero};
+#![no_std]
+extern crate alloc;
+
+use alloc::vec::Vec;
+use core::{iter::FusedIterator, marker::PhantomData, num::NonZero};
 
 pub trait Metric<A, B> {
     fn distance(&mut self, a: A, b: B) -> usize;
@@ -41,9 +45,11 @@ impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for Levenshtein<E>
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug)]
 pub struct BKMap<K, V, M> {
     root: Option<BKNode<K, V>>,
+    #[cfg_attr(feature = "serde", serde(skip))]
     metric: M,
 }
 
@@ -56,6 +62,7 @@ impl<K, V, M: Default> Default for BKMap<K, V, M> {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug)]
 struct BKNode<K, V> {
     dist: NonZero<usize>,
@@ -157,7 +164,7 @@ impl<K, V, M> BKMap<K, V, M> {
         let mut metric = M::default();
 
         let mut ret = Vec::with_capacity(count);
-        let mut stack = vec![(0, root)];
+        let mut stack = Vec::from([(0, root)]);
 
         while let Some((dist, node)) = stack.pop() {
             let distance = ret.get(count - 1).map_or(usize::MAX, |(x, _, _)| *x);

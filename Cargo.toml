@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[dependencies]
+serde = { version = "1", optional = true, default-features = false, features = [
+	"alloc",
+	"derive",
+] }
+
 [lints.rust]
 missing_copy_implementations = "warn"
 missing_debug_implementations = "warn"
@@ -47,6 +53,10 @@ unused_trait_names = "warn"
 dbg_macro = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
+
+std_instead_of_alloc = "warn"
+std_instead_of_core = "warn"
+alloc_instead_of_core = "warn"
 
 multiple_unsafe_ops_per_block = "deny"
 undocumented_unsafe_blocks = "deny"
