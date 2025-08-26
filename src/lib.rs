@@ -133,13 +133,13 @@ impl<K, V, M> BKMap<K, V, M> {
         }
     }
 
-    pub fn fuzzy_search_distance<'a, S: Copy>(
+    pub fn fuzzy_search_distance<'a, S>(
         &'a self,
         key: S,
         distance: usize,
     ) -> BKFuzzy<'a, K, V, M, S>
     where
-        M: Metric<S, &'a K> + Default,
+        M: for<'b> Metric<&'b S, &'a K> + Default,
     {
         BKFuzzy {
             metric: M::default(),
@@ -149,13 +149,9 @@ impl<K, V, M> BKMap<K, V, M> {
         }
     }
 
-    pub fn fuzzy_search_count<'a, S: Copy>(
-        &'a self,
-        key: S,
-        count: usize,
-    ) -> Vec<(usize, &'a K, &'a V)>
+    pub fn fuzzy_search_count<'a, S>(&'a self, key: &S, count: usize) -> Vec<(usize, &'a K, &'a V)>
     where
-        M: Metric<S, &'a K> + Default,
+        M: for<'b> Metric<&'b S, &'a K> + Default,
     {
         let Some(root) = self.root.as_ref() else {
             return Vec::new();
@@ -204,13 +200,13 @@ pub struct BKFuzzy<'a, K, V, M, S> {
     distance: usize,
 }
 
-impl<'a, K, V, M: Metric<S, &'a K>, S: Copy> Iterator for BKFuzzy<'a, K, V, M, S> {
+impl<'a, K, V, M: for<'b> Metric<&'b S, &'a K>, S> Iterator for BKFuzzy<'a, K, V, M, S> {
     type Item = (usize, &'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let node = self.stack.pop()?;
-            let dist = self.metric.distance(self.key, &node.key);
+            let dist = self.metric.distance(&self.key, &node.key);
 
             self.stack.extend(node.children_around(dist, self.distance));
 
