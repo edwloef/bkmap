@@ -46,7 +46,7 @@ impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for Levenshtein<E>
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BKMap<K, V, M> {
     root: Option<BKNode<K, V>>,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -63,7 +63,7 @@ impl<K, V, M: Default> Default for BKMap<K, V, M> {
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct BKNode<K, V> {
     dist: NonZero<usize>,
     key: K,
@@ -72,6 +72,14 @@ struct BKNode<K, V> {
 }
 
 impl<K, V> BKNode<K, V> {
+    fn len(&self) -> usize {
+        self.children.iter().map(Self::len).sum::<usize>() + 1
+    }
+
+    fn capacity(&self) -> usize {
+        self.children.iter().map(Self::capacity).sum::<usize>() + self.children.capacity()
+    }
+
     fn shrink_to_fit(&mut self) {
         self.children.shrink_to_fit();
 
@@ -127,6 +135,21 @@ impl<K, V, M> BKMap<K, V, M> {
         }
     }
 
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.root.as_ref().map_or(0, BKNode::len)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.root.is_none()
+    }
+
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.root.as_ref().map_or(0, BKNode::capacity)
+    }
+
     pub fn shrink_to_fit(&mut self) {
         if let Some(root) = &mut self.root {
             root.shrink_to_fit();
@@ -148,51 +171,10 @@ impl<K, V, M> BKMap<K, V, M> {
             distance,
         }
     }
-
-    pub fn fuzzy_search_count<'a, S>(&'a self, key: &S, count: usize) -> Vec<(usize, &'a K, &'a V)>
-    where
-        M: for<'b> Metric<&'b S, &'a K> + Default,
-    {
-        let Some(root) = self.root.as_ref() else {
-            return Vec::new();
-        };
-
-        let mut metric = M::default();
-
-        let mut ret = Vec::with_capacity(count);
-        let mut stack = Vec::from([(0, root)]);
-
-        while let Some((dist, node)) = stack.pop() {
-            let distance = ret.get(count - 1).map_or(usize::MAX, |(x, _, _)| *x);
-
-            if node.dist.get().abs_diff(dist) > distance {
-                continue;
-            }
-
-            let dist = metric.distance(key, &node.key);
-
-            stack.extend(
-                node.children_around(dist, distance)
-                    .map(|child| (dist, child)),
-            );
-
-            if dist <= distance {
-                let i = ret
-                    .iter()
-                    .position(|(x, _, _)| *x > dist)
-                    .unwrap_or(ret.len());
-                ret.insert(i, (dist, &node.key, &node.value));
-                if ret.len() > count && i < count && ret[count - 1].0 != ret[count].0 {
-                    ret.truncate(count);
-                }
-            }
-        }
-
-        ret
-    }
 }
 
-#[derive(Debug)]
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+#[derive(Clone, Debug)]
 pub struct BKFuzzy<'a, K, V, M, S> {
     metric: M,
     stack: Vec<&'a BKNode<K, V>>,
