@@ -88,11 +88,11 @@ impl<K, V> BKNode<K, V> {
         }
     }
 
-    fn children_around(&self, dist: usize, distance: usize) -> impl Iterator<Item = &Self> {
+    fn children_around(&self, dist: usize, radius: usize) -> impl Iterator<Item = &Self> {
         self.children
             .iter()
-            .skip_while(move |child| child.dist.get() < dist.saturating_sub(distance))
-            .take_while(move |child| child.dist.get() <= dist.saturating_add(distance))
+            .skip_while(move |child| child.dist.get() < dist.saturating_sub(radius))
+            .take_while(move |child| child.dist.get() <= dist.saturating_add(radius))
     }
 }
 
@@ -101,7 +101,30 @@ impl<K, V, M> BKMap<K, V, M> {
     where
         M: for<'b> Metric<&'b K, &'a K>,
     {
+        self.insert_or_modify(key, value, |old, new| *old = new);
+    }
+
+    pub fn insert_or_modify<'a>(&'a mut self, key: K, value: V, modify: impl FnOnce(&mut V, V))
+    where
+        M: for<'b> Metric<&'b K, &'a K>,
+    {
+        self.insert_and_modify(key, value, |old, new| {
+            if let Some(new) = new {
+                modify(old, new);
+            }
+        });
+    }
+
+    pub fn insert_and_modify<'a>(
+        &'a mut self,
+        key: K,
+        mut value: V,
+        modify: impl FnOnce(&mut V, Option<V>),
+    ) where
+        M: for<'b> Metric<&'b K, &'a K>,
+    {
         if self.root.is_none() {
+            modify(&mut value, None);
             return self.root = Some(BKNode {
                 dist: NonZero::new(1).unwrap(),
                 key,
@@ -114,12 +137,13 @@ impl<K, V, M> BKMap<K, V, M> {
 
         loop {
             let Some(dist) = NonZero::new(self.metric.distance(&key, &node.key)) else {
-                return node.value = value;
+                return modify(&mut node.value, Some(value));
             };
 
             let child = node.children.iter().position(|child| child.dist >= dist);
 
             let Some(child) = child.filter(|child| node.children[*child].dist == dist) else {
+                modify(&mut value, None);
                 return node.children.insert(
                     child.unwrap_or(node.children.len()),
                     BKNode {
