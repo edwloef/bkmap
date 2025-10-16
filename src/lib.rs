@@ -55,10 +55,7 @@ pub struct BKMap<K, V, M> {
 
 impl<K, V, M: Default> Default for BKMap<K, V, M> {
     fn default() -> Self {
-        Self {
-            root: None,
-            metric: M::default(),
-        }
+        Self::new()
     }
 }
 
@@ -97,6 +94,19 @@ impl<K, V> BKNode<K, V> {
 }
 
 impl<K, V, M> BKMap<K, V, M> {
+    #[must_use]
+    pub fn new() -> Self
+    where
+        M: Default,
+    {
+        Self::with_metric(M::default())
+    }
+
+    #[must_use]
+    pub const fn with_metric(metric: M) -> Self {
+        Self { root: None, metric }
+    }
+
     pub fn insert<'a>(&'a mut self, key: K, value: V)
     where
         M: for<'b> Metric<&'b K, &'a K>,
