@@ -3,27 +3,41 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::{iter::FusedIterator, marker::PhantomData, num::NonZero};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer, Serialize};
 
-pub trait Metric<A, B> {
-    fn distance(&mut self, a: A, b: B) -> usize;
+pub trait BuildMetric {
+    type Metric;
+
+    fn build(&self) -> Self::Metric;
 }
 
-#[derive(Debug)]
-pub struct Levenshtein<E> {
-    cache: Vec<usize>,
-    _e: PhantomData<E>,
-}
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Levenshtein<E>(PhantomData<E>);
 
-impl<E> Default for Levenshtein<E> {
-    fn default() -> Self {
-        Self {
+impl<E> BuildMetric for Levenshtein<E> {
+    type Metric = LevenshteinMetric<E>;
+
+    fn build(&self) -> Self::Metric {
+        Self::Metric {
             cache: Vec::new(),
             _e: PhantomData,
         }
     }
 }
 
-impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for Levenshtein<E> {
+pub trait Metric<A, B> {
+    fn distance(&mut self, a: A, b: B) -> usize;
+}
+
+#[derive(Debug)]
+pub struct LevenshteinMetric<E> {
+    cache: Vec<usize>,
+    _e: PhantomData<E>,
+}
+
+impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for LevenshteinMetric<E> {
     fn distance(&mut self, a: A, b: B) -> usize {
         let a = a.as_ref();
         let b = b.as_ref();
@@ -45,24 +59,38 @@ impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for Levenshtein<E>
     }
 }
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 #[derive(Clone, Debug)]
-pub struct BKMap<K, V, M> {
+pub struct BKMap<K, V, M: BuildMetric> {
     root: Option<BKNode<K, V>>,
+    build_metric: M,
     #[cfg_attr(feature = "serde", serde(skip))]
-    metric: M,
+    metric: M::Metric,
 }
 
-impl<K, V, M: Default> Default for BKMap<K, V, M> {
-    fn default() -> Self {
-        Self {
-            root: None,
-            metric: M::default(),
+#[cfg(feature = "serde")]
+impl<'de, K: Deserialize<'de>, V: Deserialize<'de>, M: Deserialize<'de> + BuildMetric>
+    Deserialize<'de> for BKMap<K, V, M>
+{
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct BKMap<K, V, M> {
+            root: Option<BKNode<K, V>>,
+            build_metric: M,
         }
+
+        let BKMap { root, build_metric } = BKMap::<K, V, M>::deserialize(deserializer)?;
+        let metric = build_metric.build();
+
+        Ok(Self {
+            root,
+            build_metric,
+            metric,
+        })
     }
 }
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Debug)]
 struct BKNode<K, V> {
     dist: NonZero<usize>,
@@ -96,17 +124,33 @@ impl<K, V> BKNode<K, V> {
     }
 }
 
-impl<K, V, M> BKMap<K, V, M> {
+impl<K, V, M: BuildMetric + Default> Default for BKMap<K, V, M> {
+    fn default() -> Self {
+        Self::with_metric(M::default())
+    }
+}
+
+impl<K, V, M: BuildMetric> BKMap<K, V, M> {
+    #[must_use]
+    pub fn with_metric(build_metric: M) -> Self {
+        let metric = build_metric.build();
+        Self {
+            root: None,
+            build_metric,
+            metric,
+        }
+    }
+
     pub fn insert<'a>(&'a mut self, key: K, value: V)
     where
-        M: for<'b> Metric<&'b K, &'a K>,
+        M::Metric: for<'b> Metric<&'b K, &'a K>,
     {
         self.insert_or_modify(key, value, |old, new| *old = new);
     }
 
     pub fn insert_or_modify<'a>(&'a mut self, key: K, value: V, modify: impl FnOnce(&mut V, V))
     where
-        M: for<'b> Metric<&'b K, &'a K>,
+        M::Metric: for<'b> Metric<&'b K, &'a K>,
     {
         self.insert_and_modify(key, value, |old, new| {
             if let Some(new) = new {
@@ -121,7 +165,7 @@ impl<K, V, M> BKMap<K, V, M> {
         mut value: V,
         modify: impl FnOnce(&mut V, Option<V>),
     ) where
-        M: for<'b> Metric<&'b K, &'a K>,
+        M::Metric: for<'b> Metric<&'b K, &'a K>,
     {
         if self.root.is_none() {
             modify(&mut value, None);
@@ -184,12 +228,12 @@ impl<K, V, M> BKMap<K, V, M> {
         &'a self,
         key: S,
         distance: usize,
-    ) -> BKFuzzy<'a, K, V, M, S>
+    ) -> BKFuzzy<'a, K, V, M::Metric, S>
     where
-        M: for<'b> Metric<&'b S, &'a K> + Default,
+        M::Metric: for<'b> Metric<&'b S, &'a K>,
     {
         BKFuzzy {
-            metric: M::default(),
+            metric: self.build_metric.build(),
             stack: self.root.as_ref().into_iter().collect(),
             key,
             distance,
