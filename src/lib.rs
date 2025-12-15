@@ -222,47 +222,45 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         }
     }
 
-    pub fn fuzzy_search_distance<'a, S>(
-        &'a self,
-        key: S,
-        distance: usize,
-    ) -> BKFuzzy<'a, K, V, M::Metric, S>
+    pub fn fuzzy_search<'a, Q>(&'a self, query: Q, dist: usize) -> BKFuzzySearch<'a, K, V, M, Q>
     where
-        BKFuzzy<'a, K, V, M::Metric, S>: Iterator,
+        BKFuzzySearch<'a, K, V, M, Q>: Iterator,
     {
-        BKFuzzy {
-            metric: self.build_metric.build(),
+        BKFuzzySearch {
             stack: self.root.as_ref().into_iter().collect(),
-            key,
-            distance,
+            metric: self.build_metric.build(),
+            query,
+            dist,
         }
     }
 }
 
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 #[derive(Clone, Debug)]
-pub struct BKFuzzy<'a, K, V, M, S> {
-    metric: M,
+pub struct BKFuzzySearch<'a, K, V, M: BuildMetric, Q> {
     stack: Vec<&'a BKNode<K, V>>,
-    key: S,
-    distance: usize,
+    metric: M::Metric,
+    query: Q,
+    dist: usize,
 }
 
-impl<'a, K, V, M: for<'b> Metric<&'b S, &'b K>, S> Iterator for BKFuzzy<'a, K, V, M, S> {
+impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K>>, Q> Iterator
+    for BKFuzzySearch<'a, K, V, M, Q>
+{
     type Item = (usize, &'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let node = self.stack.pop()?;
-            let dist = self.metric.distance(&self.key, &node.key);
+            let dist = self.metric.distance(&self.query, &node.key);
 
-            self.stack.extend(node.children_around(dist, self.distance));
+            self.stack.extend(node.children_around(dist, self.dist));
 
-            if dist <= self.distance {
+            if dist <= self.dist {
                 return Some((dist, &node.key, &node.value));
             }
         }
     }
 }
 
-impl<K, V, M, S> FusedIterator for BKFuzzy<'_, K, V, M, S> where Self: Iterator {}
+impl<K, V, M: BuildMetric, Q> FusedIterator for BKFuzzySearch<'_, K, V, M, Q> where Self: Iterator {}
