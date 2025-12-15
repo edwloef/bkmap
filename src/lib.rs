@@ -141,16 +141,16 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         }
     }
 
-    pub fn insert<'a>(&'a mut self, key: K, value: V)
+    pub fn insert(&mut self, key: K, value: V)
     where
-        M::Metric: for<'b> Metric<&'b K, &'a K>,
+        M::Metric: for<'a> Metric<&'a K, &'a K>,
     {
         self.insert_or_modify(key, value, |old, new| *old = new);
     }
 
-    pub fn insert_or_modify<'a>(&'a mut self, key: K, value: V, modify: impl FnOnce(&mut V, V))
+    pub fn insert_or_modify(&mut self, key: K, value: V, modify: impl FnOnce(&mut V, V))
     where
-        M::Metric: for<'b> Metric<&'b K, &'a K>,
+        M::Metric: for<'a> Metric<&'a K, &'a K>,
     {
         self.insert_and_modify(key, value, |old, new| {
             if let Some(new) = new {
@@ -159,15 +159,15 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         });
     }
 
-    pub fn insert_and_modify<'a>(
-        &'a mut self,
+    pub fn insert_and_modify(
+        &mut self,
         key: K,
         mut value: V,
         modify: impl FnOnce(&mut V, Option<V>),
     ) where
-        M::Metric: for<'b> Metric<&'b K, &'a K>,
+        M::Metric: for<'a> Metric<&'a K, &'a K>,
     {
-        if self.root.is_none() {
+        let Some(mut node) = self.root.as_mut() else {
             modify(&mut value, None);
             return self.root = Some(BKNode {
                 dist: NonZero::new(1).unwrap(),
@@ -175,9 +175,7 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
                 value,
                 children: Vec::new(),
             });
-        }
-
-        let mut node = self.root.as_mut().unwrap();
+        };
 
         loop {
             let Some(dist) = NonZero::new(self.metric.distance(&key, &node.key)) else {
@@ -186,7 +184,7 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
 
             let child = node.children.iter().position(|child| child.dist >= dist);
 
-            let Some(child) = child.filter(|child| node.children[*child].dist == dist) else {
+            let Some(child) = child.filter(|&child| node.children[child].dist == dist) else {
                 modify(&mut value, None);
                 return node.children.insert(
                     child.unwrap_or(node.children.len()),
@@ -230,7 +228,7 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         distance: usize,
     ) -> BKFuzzy<'a, K, V, M::Metric, S>
     where
-        M::Metric: for<'b> Metric<&'b S, &'a K>,
+        BKFuzzy<'a, K, V, M::Metric, S>: Iterator,
     {
         BKFuzzy {
             metric: self.build_metric.build(),
@@ -250,7 +248,7 @@ pub struct BKFuzzy<'a, K, V, M, S> {
     distance: usize,
 }
 
-impl<'a, K, V, M: for<'b> Metric<&'b S, &'a K>, S> Iterator for BKFuzzy<'a, K, V, M, S> {
+impl<'a, K, V, M: for<'b> Metric<&'b S, &'b K>, S> Iterator for BKFuzzy<'a, K, V, M, S> {
     type Item = (usize, &'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
