@@ -1,7 +1,7 @@
 #![no_std]
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::{iter::FusedIterator, marker::PhantomData, num::NonZero};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize};
@@ -100,19 +100,12 @@ struct BKNode<K, V> {
 }
 
 impl<K, V> BKNode<K, V> {
-    fn len(&self) -> usize {
-        self.children.iter().map(Self::len).sum::<usize>() + 1
-    }
-
-    fn capacity(&self) -> usize {
-        self.children.iter().map(Self::capacity).sum::<usize>() + self.children.capacity()
-    }
-
-    fn shrink_to_fit(&mut self) {
-        self.children.shrink_to_fit();
-
-        for child in &mut self.children {
-            child.shrink_to_fit();
+    fn freeze(self) -> FrozenBKNode<K, V> {
+        FrozenBKNode {
+            dist: self.dist,
+            key: self.key,
+            value: self.value,
+            children: self.children.into_iter().map(Self::freeze).collect(),
         }
     }
 
@@ -201,24 +194,10 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         }
     }
 
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.root.as_ref().map_or(0, BKNode::len)
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.root.is_none()
-    }
-
-    #[must_use]
-    pub fn capacity(&self) -> usize {
-        self.root.as_ref().map_or(0, BKNode::capacity)
-    }
-
-    pub fn shrink_to_fit(&mut self) {
-        if let Some(root) = &mut self.root {
-            root.shrink_to_fit();
+    pub fn freeze(self) -> FrozenBKMap<K, V, M> {
+        FrozenBKMap {
+            root: self.root.map(BKNode::freeze),
+            build_metric: self.build_metric,
         }
     }
 
@@ -264,3 +243,79 @@ impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K>>, Q> Iterator
 }
 
 impl<K, V, M: BuildMetric, Q> FusedIterator for BKFuzzySearch<'_, K, V, M, Q> where Self: Iterator {}
+
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Debug)]
+pub struct FrozenBKMap<K, V, M: BuildMetric> {
+    root: Option<FrozenBKNode<K, V>>,
+    build_metric: M,
+}
+
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Clone, Debug)]
+struct FrozenBKNode<K, V> {
+    dist: NonZero<usize>,
+    key: K,
+    value: V,
+    children: Box<[Self]>,
+}
+
+impl<K, V> FrozenBKNode<K, V> {
+    fn children_around(&self, dist: usize, radius: usize) -> impl Iterator<Item = &Self> {
+        self.children
+            .iter()
+            .skip_while(move |child| child.dist.get() < dist.saturating_sub(radius))
+            .take_while(move |child| child.dist.get() <= dist.saturating_add(radius))
+    }
+}
+
+impl<K, V, M: BuildMetric> FrozenBKMap<K, V, M> {
+    pub fn fuzzy_search<'a, Q>(
+        &'a self,
+        query: Q,
+        dist: usize,
+    ) -> FrozenBKFuzzySearch<'a, K, V, M, Q>
+    where
+        FrozenBKFuzzySearch<'a, K, V, M, Q>: Iterator,
+    {
+        FrozenBKFuzzySearch {
+            stack: self.root.as_ref().into_iter().collect(),
+            metric: self.build_metric.build(),
+            query,
+            dist,
+        }
+    }
+}
+
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+#[derive(Clone, Debug)]
+pub struct FrozenBKFuzzySearch<'a, K, V, M: BuildMetric, Q> {
+    stack: Vec<&'a FrozenBKNode<K, V>>,
+    metric: M::Metric,
+    query: Q,
+    dist: usize,
+}
+
+impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K>>, Q> Iterator
+    for FrozenBKFuzzySearch<'a, K, V, M, Q>
+{
+    type Item = (usize, &'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let node = self.stack.pop()?;
+            let dist = self.metric.distance(&self.query, &node.key);
+
+            self.stack.extend(node.children_around(dist, self.dist));
+
+            if dist <= self.dist {
+                return Some((dist, &node.key, &node.value));
+            }
+        }
+    }
+}
+
+impl<K, V, M: BuildMetric, Q> FusedIterator for FrozenBKFuzzySearch<'_, K, V, M, Q> where
+    Self: Iterator
+{
+}
