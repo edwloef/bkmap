@@ -201,10 +201,7 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         }
     }
 
-    pub fn fuzzy_search<'a, Q>(&'a self, query: Q, dist: usize) -> BKFuzzySearch<'a, K, V, M, Q>
-    where
-        BKFuzzySearch<'a, K, V, M, Q>: Iterator,
-    {
+    pub fn fuzzy_search<Q>(&self, query: Q, dist: usize) -> BKFuzzySearch<'_, K, V, M, Q> {
         BKFuzzySearch {
             stack: self.root.as_ref().into_iter().collect(),
             metric: self.build_metric.build(),
@@ -270,14 +267,7 @@ impl<K, V> FrozenBKNode<K, V> {
 }
 
 impl<K, V, M: BuildMetric> FrozenBKMap<K, V, M> {
-    pub fn fuzzy_search<'a, Q>(
-        &'a self,
-        query: Q,
-        dist: usize,
-    ) -> FrozenBKFuzzySearch<'a, K, V, M, Q>
-    where
-        FrozenBKFuzzySearch<'a, K, V, M, Q>: Iterator,
-    {
+    pub fn fuzzy_search<Q>(&self, query: Q, dist: usize) -> FrozenBKFuzzySearch<'_, K, V, M, Q> {
         FrozenBKFuzzySearch {
             stack: self.root.as_ref().into_iter().collect(),
             metric: self.build_metric.build(),
