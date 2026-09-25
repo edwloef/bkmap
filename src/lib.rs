@@ -39,8 +39,26 @@ pub struct LevenshteinMetric<E> {
 
 impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for LevenshteinMetric<E> {
     fn distance(&mut self, a: A, b: B) -> usize {
-        let a = a.as_ref();
-        let b = b.as_ref();
+        let mut a = a.as_ref();
+        let mut b = b.as_ref();
+
+        if a.len() < b.len() {
+            (a, b) = (b, a);
+        }
+
+        while !b.is_empty() && a.first() == b.first() {
+            a = &a[1..];
+            b = &b[1..];
+        }
+
+        while !b.is_empty() && a.last() == b.last() {
+            a = &a[..a.len() - 1];
+            b = &b[..b.len() - 1];
+        }
+
+        if b.is_empty() {
+            return a.len();
+        }
 
         self.cache.clear();
         self.cache.extend(1..=b.len());
