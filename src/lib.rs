@@ -133,6 +133,25 @@ impl<K, V> BKNode<K, V> {
             .skip_while(move |child| child.dist.get() < dist.saturating_sub(radius))
             .take_while(move |child| child.dist.get() <= dist.saturating_add(radius))
     }
+
+    fn fold<'a, B, Q>(
+        &'a self,
+        metric: &mut impl for<'b> Metric<&'b Q, &'b K>,
+        query: &Q,
+        radius: usize,
+        acc: B,
+        f: &mut impl FnMut(B, (usize, &'a K, &'a V)) -> B,
+    ) -> B {
+        let dist = metric.distance(query, &self.key);
+        self.children_around(dist, radius).fold(
+            if dist <= radius {
+                f(acc, (dist, &self.key, &self.value))
+            } else {
+                acc
+            },
+            |acc, child| child.fold(metric, query, radius, acc, f),
+        )
+    }
 }
 
 impl<K, V, M: BuildMetric + Default> Default for BKMap<K, V, M> {
@@ -255,6 +274,15 @@ impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K>>, Q> Iterator
             }
         }
     }
+
+    fn fold<B, F>(mut self, init: B, mut f: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.stack.into_iter().fold(init, |acc, node| {
+            node.fold(&mut self.metric, &self.query, self.dist, acc, &mut f)
+        })
+    }
 }
 
 impl<K, V, M: BuildMetric, Q> FusedIterator for BKFuzzySearch<'_, K, V, M, Q> where Self: Iterator {}
@@ -281,6 +309,25 @@ impl<K, V> FrozenBKNode<K, V> {
             .iter()
             .skip_while(move |child| child.dist.get() < dist.saturating_sub(radius))
             .take_while(move |child| child.dist.get() <= dist.saturating_add(radius))
+    }
+
+    fn fold<'a, B, Q>(
+        &'a self,
+        metric: &mut impl for<'b> Metric<&'b Q, &'b K>,
+        query: &Q,
+        radius: usize,
+        acc: B,
+        f: &mut impl FnMut(B, (usize, &'a K, &'a V)) -> B,
+    ) -> B {
+        let dist = metric.distance(query, &self.key);
+        self.children_around(dist, radius).fold(
+            if dist <= radius {
+                f(acc, (dist, &self.key, &self.value))
+            } else {
+                acc
+            },
+            |acc, child| child.fold(metric, query, radius, acc, f),
+        )
     }
 }
 
@@ -320,6 +367,15 @@ impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K>>, Q> Iterator
                 return Some((dist, &node.key, &node.value));
             }
         }
+    }
+
+    fn fold<B, F>(mut self, init: B, mut f: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.stack.into_iter().fold(init, |acc, node| {
+            node.fold(&mut self.metric, &self.query, self.dist, acc, &mut f)
+        })
     }
 }
 
