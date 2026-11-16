@@ -2,11 +2,16 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, vec::Vec};
-use core::{iter::FusedIterator, marker::PhantomData, num::NonZero};
+use core::{iter::FusedIterator, marker::PhantomData};
+use num_traits::{AsPrimitive, SaturatingAdd, SaturatingSub, Zero};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub trait Distance: Copy + PartialOrd + SaturatingAdd + SaturatingSub + Zero {}
+impl<T: Copy + PartialOrd + SaturatingAdd + SaturatingSub + Zero> Distance for T {}
+
 pub trait BuildMetric {
+    type Distance: Distance;
     type Metric;
 
     fn build(&self) -> Self::Metric;
@@ -14,31 +19,40 @@ pub trait BuildMetric {
 
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Levenshtein<E>(PhantomData<E>);
+pub struct Levenshtein<E, D = usize>(PhantomData<(E, D)>);
 
-impl<E> BuildMetric for Levenshtein<E> {
-    type Metric = LevenshteinMetric<E>;
+impl<E, D: Distance> BuildMetric for Levenshtein<E, D> {
+    type Distance = D;
+    type Metric = LevenshteinMetric<E, D>;
 
     fn build(&self) -> Self::Metric {
         Self::Metric {
             cache: Vec::new(),
-            _e: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
 
 pub trait Metric<A, B> {
-    fn distance(&mut self, a: A, b: B) -> usize;
+    type Distance: Distance;
+
+    fn distance(&mut self, a: A, b: B) -> Self::Distance;
 }
 
 #[derive(Debug)]
-pub struct LevenshteinMetric<E> {
+pub struct LevenshteinMetric<E, D> {
     cache: Vec<usize>,
-    _e: PhantomData<E>,
+    _phantom: PhantomData<(E, D)>,
 }
 
-impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for LevenshteinMetric<E> {
-    fn distance(&mut self, a: A, b: B) -> usize {
+impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq, D: Distance + 'static> Metric<A, B>
+    for LevenshteinMetric<E, D>
+where
+    usize: AsPrimitive<D>,
+{
+    type Distance = D;
+
+    fn distance(&mut self, a: A, b: B) -> D {
         let mut a = a.as_ref();
         let mut b = b.as_ref();
 
@@ -57,7 +71,7 @@ impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for LevenshteinMet
         }
 
         if b.is_empty() {
-            return a.len();
+            return a.len().as_();
         }
 
         self.cache.clear();
@@ -73,27 +87,33 @@ impl<A: AsRef<[E]>, B: AsRef<[E]>, E: PartialEq> Metric<A, B> for LevenshteinMet
             }
         }
 
-        result
+        result.as_()
     }
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize))]
 #[derive(Clone, Debug)]
 pub struct BKMap<K, V, M: BuildMetric> {
-    root: Option<BKNode<K, V>>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(bound(serialize = "BKNode<K, V, M::Distance>: Serialize"))
+    )]
+    root: Option<BKNode<K, V, M::Distance>>,
     build_metric: M,
     #[cfg_attr(feature = "serde", serde(skip))]
     metric: M::Metric,
 }
 
 #[cfg(feature = "serde")]
-impl<'de, K: Deserialize<'de>, V: Deserialize<'de>, M: Deserialize<'de> + BuildMetric>
-    Deserialize<'de> for BKMap<K, V, M>
+impl<'de, K, V, M: Deserialize<'de> + BuildMetric> Deserialize<'de> for BKMap<K, V, M>
+where
+    BKNode<K, V, M::Distance>: Deserialize<'de>,
 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
-        struct BKMap<K, V, M> {
-            root: Option<BKNode<K, V>>,
+        struct BKMap<K, V, M: BuildMetric> {
+            #[serde(bound(deserialize = "BKNode<K, V, M::Distance>: Deserialize<'de>"))]
+            root: Option<BKNode<K, V, M::Distance>>,
             build_metric: M,
         }
 
@@ -110,15 +130,15 @@ impl<'de, K: Deserialize<'de>, V: Deserialize<'de>, M: Deserialize<'de> + BuildM
 
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Debug)]
-struct BKNode<K, V> {
-    dist: NonZero<usize>,
+struct BKNode<K, V, D> {
+    dist: D,
     key: K,
     value: V,
     children: Vec<Self>,
 }
 
-impl<K, V> BKNode<K, V> {
-    fn freeze(self) -> FrozenBKNode<K, V> {
+impl<K, V, D: Distance> BKNode<K, V, D> {
+    fn freeze(self) -> FrozenBKNode<K, V, D> {
         FrozenBKNode {
             dist: self.dist,
             key: self.key,
@@ -127,20 +147,20 @@ impl<K, V> BKNode<K, V> {
         }
     }
 
-    fn children_around(&self, dist: usize, radius: usize) -> impl Iterator<Item = &Self> {
+    fn children_around(&self, dist: D, radius: D) -> impl Iterator<Item = &Self> {
         self.children
             .iter()
-            .skip_while(move |child| child.dist.get() < dist.saturating_sub(radius))
-            .take_while(move |child| child.dist.get() <= dist.saturating_add(radius))
+            .skip_while(move |child| child.dist < dist.saturating_sub(&radius))
+            .take_while(move |child| child.dist <= dist.saturating_add(&radius))
     }
 
     fn fold<'a, B, Q>(
         &'a self,
-        metric: &mut impl for<'b> Metric<&'b Q, &'b K>,
+        metric: &mut impl for<'b> Metric<&'b Q, &'b K, Distance = D>,
         query: &Q,
-        radius: usize,
+        radius: D,
         acc: B,
-        f: &mut impl FnMut(B, (usize, &'a K, &'a V)) -> B,
+        f: &mut impl FnMut(B, (D, &'a K, &'a V)) -> B,
     ) -> B {
         let dist = metric.distance(query, &self.key);
         self.children_around(dist, radius).fold(
@@ -170,17 +190,19 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
             metric,
         }
     }
+}
 
+impl<K, V, M: BuildMetric> BKMap<K, V, M> {
     pub fn insert(&mut self, key: K, value: V)
     where
-        M::Metric: for<'a> Metric<&'a K, &'a K>,
+        M::Metric: for<'a> Metric<&'a K, &'a K, Distance = M::Distance>,
     {
         self.insert_or_modify(key, value, |old, new| *old = new);
     }
 
     pub fn insert_or_modify(&mut self, key: K, value: V, modify: impl FnOnce(&mut V, V))
     where
-        M::Metric: for<'a> Metric<&'a K, &'a K>,
+        M::Metric: for<'a> Metric<&'a K, &'a K, Distance = M::Distance>,
     {
         self.insert_and_modify(key, value, |old, new| {
             if let Some(new) = new {
@@ -195,12 +217,12 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         mut value: V,
         modify: impl FnOnce(&mut V, Option<V>),
     ) where
-        M::Metric: for<'a> Metric<&'a K, &'a K>,
+        M::Metric: for<'a> Metric<&'a K, &'a K, Distance = M::Distance>,
     {
         let Some(mut node) = self.root.as_mut() else {
             modify(&mut value, None);
             return self.root = Some(BKNode {
-                dist: NonZero::new(1).unwrap(),
+                dist: M::Distance::zero(),
                 key,
                 value,
                 children: Vec::new(),
@@ -208,9 +230,10 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         };
 
         loop {
-            let Some(dist) = NonZero::new(self.metric.distance(&key, &node.key)) else {
+            let dist = self.metric.distance(&key, &node.key);
+            if dist.is_zero() {
                 return modify(&mut node.value, Some(value));
-            };
+            }
 
             let child = node.children.iter().position(|child| child.dist >= dist);
 
@@ -238,7 +261,7 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
         }
     }
 
-    pub fn fuzzy_search<Q>(&self, query: Q, dist: usize) -> BKFuzzySearch<'_, K, V, M, Q> {
+    pub fn fuzzy_search<Q>(&self, query: Q, dist: M::Distance) -> BKFuzzySearch<'_, K, V, M, Q> {
         BKFuzzySearch {
             stack: self.root.as_ref().into_iter().collect(),
             metric: self.build_metric.build(),
@@ -251,16 +274,16 @@ impl<K, V, M: BuildMetric> BKMap<K, V, M> {
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 #[derive(Clone, Debug)]
 pub struct BKFuzzySearch<'a, K, V, M: BuildMetric, Q> {
-    stack: Vec<&'a BKNode<K, V>>,
+    stack: Vec<&'a BKNode<K, V, M::Distance>>,
     metric: M::Metric,
     query: Q,
-    dist: usize,
+    dist: M::Distance,
 }
 
-impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K>>, Q> Iterator
-    for BKFuzzySearch<'a, K, V, M, Q>
+impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K, Distance = M::Distance>>, Q>
+    Iterator for BKFuzzySearch<'a, K, V, M, Q>
 {
-    type Item = (usize, &'a K, &'a V);
+    type Item = (M::Distance, &'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -290,34 +313,41 @@ impl<K, V, M: BuildMetric, Q> FusedIterator for BKFuzzySearch<'_, K, V, M, Q> wh
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Debug)]
 pub struct FrozenBKMap<K, V, M: BuildMetric> {
-    root: Option<FrozenBKNode<K, V>>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(bound(
+            serialize = "FrozenBKNode<K, V, M::Distance>: Serialize",
+            deserialize = "FrozenBKNode<K, V, M::Distance>: Deserialize<'de>"
+        ))
+    )]
+    root: Option<FrozenBKNode<K, V, M::Distance>>,
     build_metric: M,
 }
 
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[derive(Clone, Debug)]
-struct FrozenBKNode<K, V> {
-    dist: NonZero<usize>,
+struct FrozenBKNode<K, V, D> {
+    dist: D,
     key: K,
     value: V,
     children: Box<[Self]>,
 }
 
-impl<K, V> FrozenBKNode<K, V> {
-    fn children_around(&self, dist: usize, radius: usize) -> impl Iterator<Item = &Self> {
+impl<K, V, D: Distance> FrozenBKNode<K, V, D> {
+    fn children_around(&self, dist: D, radius: D) -> impl Iterator<Item = &Self> {
         self.children
             .iter()
-            .skip_while(move |child| child.dist.get() < dist.saturating_sub(radius))
-            .take_while(move |child| child.dist.get() <= dist.saturating_add(radius))
+            .skip_while(move |child| child.dist < dist.saturating_sub(&radius))
+            .take_while(move |child| child.dist <= dist.saturating_add(&radius))
     }
 
     fn fold<'a, B, Q>(
         &'a self,
-        metric: &mut impl for<'b> Metric<&'b Q, &'b K>,
+        metric: &mut impl for<'b> Metric<&'b Q, &'b K, Distance = D>,
         query: &Q,
-        radius: usize,
+        radius: D,
         acc: B,
-        f: &mut impl FnMut(B, (usize, &'a K, &'a V)) -> B,
+        f: &mut impl FnMut(B, (D, &'a K, &'a V)) -> B,
     ) -> B {
         let dist = metric.distance(query, &self.key);
         self.children_around(dist, radius).fold(
@@ -332,7 +362,11 @@ impl<K, V> FrozenBKNode<K, V> {
 }
 
 impl<K, V, M: BuildMetric> FrozenBKMap<K, V, M> {
-    pub fn fuzzy_search<Q>(&self, query: Q, dist: usize) -> FrozenBKFuzzySearch<'_, K, V, M, Q> {
+    pub fn fuzzy_search<Q>(
+        &self,
+        query: Q,
+        dist: M::Distance,
+    ) -> FrozenBKFuzzySearch<'_, K, V, M, Q> {
         FrozenBKFuzzySearch {
             stack: self.root.as_ref().into_iter().collect(),
             metric: self.build_metric.build(),
@@ -345,16 +379,16 @@ impl<K, V, M: BuildMetric> FrozenBKMap<K, V, M> {
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 #[derive(Clone, Debug)]
 pub struct FrozenBKFuzzySearch<'a, K, V, M: BuildMetric, Q> {
-    stack: Vec<&'a FrozenBKNode<K, V>>,
+    stack: Vec<&'a FrozenBKNode<K, V, M::Distance>>,
     metric: M::Metric,
     query: Q,
-    dist: usize,
+    dist: M::Distance,
 }
 
-impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K>>, Q> Iterator
-    for FrozenBKFuzzySearch<'a, K, V, M, Q>
+impl<'a, K, V, M: BuildMetric<Metric: for<'b> Metric<&'b Q, &'b K, Distance = M::Distance>>, Q>
+    Iterator for FrozenBKFuzzySearch<'a, K, V, M, Q>
 {
-    type Item = (usize, &'a K, &'a V);
+    type Item = (M::Distance, &'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
